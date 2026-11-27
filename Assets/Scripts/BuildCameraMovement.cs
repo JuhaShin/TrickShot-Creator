@@ -4,8 +4,8 @@ using UnityEngine.InputSystem;
 public class BuildCameraMovement : MonoBehaviour
 {
     [SerializeField] private CameraMovementSettings movementSettings;
-    private const float MinimumCameraHeight = 1f;
-    [SerializeField] private GameManager gameManager;
+    [SerializeField] private SphereCollider cameraBody;
+    private const float CollisionSkin = 0.002f;
     private Vector3 velocity;
     private float yaw;
     private float pitch;
@@ -13,16 +13,19 @@ public class BuildCameraMovement : MonoBehaviour
     private void OnEnable()
     {
         // 카메라가 씬에서 바라보던 방향부터 회전을 시작한다.
-        if (gameManager == null)
-            gameManager = FindFirstObjectByType<GameManager>();
         velocity = Vector3.zero;
+        cameraBody.enabled = true;
         ApplyMovementLimits(transform.position);
         yaw = transform.eulerAngles.y;
         pitch = Mathf.DeltaAngle(0f, transform.eulerAngles.x);
         SetCursorLocked(Application.isFocused);
     }
 
-    private void OnDisable() => SetCursorLocked(false);
+    private void OnDisable()
+    {
+        cameraBody.enabled = false;
+        SetCursorLocked(false);
+    }
 
     private void OnApplicationFocus(bool focused)
     {
@@ -59,45 +62,23 @@ public class BuildCameraMovement : MonoBehaviour
 
     private void ApplyMovementLimits(Vector3 nextPosition)
     {
-        if (gameManager == null)
-            return;
-        Bounds area = gameManager.BuildArea;
-        // 경계를 넘는 축만 멈춰서 다른 방향으로는 계속 이동할 수 있다.
-        if (nextPosition.x < area.min.x)
+        Transform rig = cameraBody.transform;
+        Vector3 position = rig.position;
+        Vector3 remaining = nextPosition - position;
+        for (int i = 0; i < 3 && remaining.sqrMagnitude > 0.00000001f; i++)
         {
-            nextPosition.x = area.min.x;
-            velocity.x = 0f;
+            float distance = remaining.magnitude;
+            Vector3 direction = remaining / distance;
+            if (!Physics.SphereCast(position, cameraBody.radius, direction, out RaycastHit hit,
+                distance + CollisionSkin, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+            {
+                position += remaining;
+                break;
+            }
+            float travel = Mathf.Clamp(hit.distance - CollisionSkin, 0f, distance);
+            position += direction * travel;
+            remaining = Vector3.ProjectOnPlane(remaining - direction * travel, hit.normal);
         }
-        else if (nextPosition.x > area.max.x)
-        {
-            nextPosition.x = area.max.x;
-            velocity.x = 0f;
-        }
-
-        // 카메라는 설치 범위 안에서도 최소 높이 1을 유지한다.
-        float minimumY = Mathf.Max(area.min.y, MinimumCameraHeight);
-        if (nextPosition.y < minimumY)
-        {
-            nextPosition.y = minimumY;
-            velocity.y = 0f;
-        }
-        else if (nextPosition.y > area.max.y)
-        {
-            nextPosition.y = area.max.y;
-            velocity.y = 0f;
-        }
-
-        if (nextPosition.z < area.min.z)
-        {
-            nextPosition.z = area.min.z;
-            velocity.z = 0f;
-        }
-        else if (nextPosition.z > area.max.z)
-        {
-            nextPosition.z = area.max.z;
-            velocity.z = 0f;
-        }
-
-        transform.position = nextPosition;
+        rig.position = position;
     }
 }

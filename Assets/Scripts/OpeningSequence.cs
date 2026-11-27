@@ -4,8 +4,10 @@ using UnityEngine.SceneManagement;
 
 public class OpeningSequence : MonoBehaviour
 {
-    [SerializeField, Min(0f)] private float duration = 10f;
+    [SerializeField, Min(0f)] private float duration = 1f;
     [SerializeField] private Camera openingCamera;
+    [SerializeField] private OpeningWalkHome walkHome;
+    [SerializeField] private Canvas openingHud;
     [SerializeField] private CameraMovementSettings movementSettings;
     [SerializeField] private Rigidbody characterBody;
     [SerializeField, Min(0f)] private float interactionDistance = 2f;
@@ -73,7 +75,11 @@ public class OpeningSequence : MonoBehaviour
 
     private IEnumerator OpenDoorAndLeave()
     {
+        SetCutscenePlaying(true);
         Transform blocker = doorBlocker.transform;
+        Vector3 threshold = blocker.TransformPoint(doorBlocker.center) -
+            Vector3.up * doorBlocker.bounds.extents.y;
+        Vector3 outward = blocker.right;
         Vector3 hinge = blocker.TransformPoint(doorBlocker.center +
             Vector3.forward * (doorBlocker.size.z * .5f));
         Vector3 axis = blocker.up;
@@ -81,11 +87,11 @@ public class OpeningSequence : MonoBehaviour
         Transform handle = leaf.parent.Find("Door Pull");
         float elapsed = 0f;
         float previousAngle = 0f;
-        while (elapsed < duration)
+        while (elapsed < .4f)
         {
             yield return null;
             elapsed += Time.unscaledDeltaTime;
-            float angle = Mathf.SmoothStep(0f, -90f, elapsed / Mathf.Min(.4f, duration));
+            float angle = Mathf.SmoothStep(0f, -90f, elapsed / .4f);
             if (angle == previousAngle) continue;
             float delta = angle - previousAngle;
             blocker.RotateAround(hinge, axis, delta);
@@ -93,6 +99,10 @@ public class OpeningSequence : MonoBehaviour
             if (handle != null && !handle.IsChildOf(leaf)) handle.RotateAround(hinge, axis, delta);
             previousAngle = angle;
         }
+
+        if (openingHud) openingHud.enabled = false;
+        yield return walkHome.WaitForDeparture(duration);
+        yield return walkHome.Play(openingCamera, threshold, outward);
         CompleteOpening();
     }
     public void CompleteOpening()

@@ -14,6 +14,10 @@ internal struct SavedTool
 internal sealed class StudioField
 {
     public string scenePath;
+    public string stageId;
+    public bool hasSimulationView, centeredGoalPose;
+    public Pose simulationView;
+    public Vector3 simulationPlayerPosition;
     public Pose ballPose, goalPose;
     public bool hasGoal;
     public SavedTool[] tools;

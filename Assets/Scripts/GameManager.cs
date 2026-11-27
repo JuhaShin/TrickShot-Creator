@@ -28,6 +28,7 @@ public class GameManager : MonoBehaviour
 
     private bool showingSuccess;
     private bool inSimulation;
+    private bool resumeLaunchMode;
     private bool showingShot;
     private Camera simulationView;
     private SimulationCameraMovement simulationMovement;
@@ -40,6 +41,9 @@ public class GameManager : MonoBehaviour
     public Bounds BuildArea => buildArea;
     public GameObject BuildCamera => buildCamera;
 
+    [SerializeField] private PingPongBallController ballPrefab;
+    [SerializeField] private Vector3 heldBallOffset = new Vector3(0f, -0.10f, 0.45f);
+    private Pose? previousLaunchView;
     private PingPongBallController ball;
     private Pose savedBallPose;
     public event System.Action LeavingBuildMode;
@@ -53,8 +57,10 @@ public class GameManager : MonoBehaviour
     private static StudioField CurrentField => ProgressSave.Data?.draft is StudioField draft &&
         !string.IsNullOrEmpty(draft.scenePath) ? draft : ProgressSave.Data?.uploaded ?? lastUpload;
 
-    internal static SavedTool[] LastFieldTools(string scenePath) =>
-        CurrentField?.scenePath == scenePath ? CurrentField.tools : null;
+    [SerializeField] private string stageId = "OldAttic";
+    private bool MatchesStage(StudioField field) => field != null && field.scenePath == gameObject.scene.path &&
+        (string.IsNullOrEmpty(field.stageId) ? "OldAttic" : field.stageId) == stageId;
+    internal SavedTool[] LastFieldTools() => MatchesStage(CurrentField) ? CurrentField.tools : null;
 
     private void Start()
     {
@@ -70,28 +76,26 @@ public class GameManager : MonoBehaviour
         if (simulationManager == null)
             simulationManager = FindFirstObjectByType<SimulationManager>();
 
-        if (simulationManager != null)
-            ball = simulationManager.Ball;
         simulationView = simulationCamera.GetComponent<Camera>();
         simulationMovement = simulationCamera.GetComponent<SimulationCameraMovement>();
 
-        if (ball != null)
-        {
-            ball.DeadZoneEntered += RespawnBall;
-            ball.GoalBodyHit += OnGoalBodyHit;
-            ball.GoalScored += ShowSuccess;
-            ball.TrickToolHit += RecordTool;
-        }
         simulationManager.LaunchRecorded += ClearUsedTools;
         successCanvas.SetActive(false);
 
-        if (CurrentField?.scenePath == gameObject.scene.path)
+        if (MatchesStage(CurrentField))
         {
-            if (ball != null) ball.ResetToPose(CurrentField.ballPose);
             var goal = GameObject.FindWithTag("Goal");
             if (goal != null && CurrentField.hasGoal)
-                goal.transform.SetPositionAndRotation(CurrentField.goalPose.position, CurrentField.goalPose.rotation);
+            {
+                var pose = CurrentField.goalPose;
+                goal.transform.SetPositionAndRotation(pose.position, pose.rotation);
+                if (!CurrentField.centeredGoalPose && goal.TryGetComponent<MeshFilter>(out var filter))
+                    goal.transform.position -= goal.transform.TransformVector(Vector3.up * filter.sharedMesh.bounds.min.y);
+            }
         }
+        var uploaded = ProgressSave.Data?.uploaded ?? lastUpload;
+        if (MatchesStage(uploaded) && uploaded.hasSimulationView)
+            simulationMovement.RestoreUploadedPosition(uploaded.simulationPlayerPosition, uploaded.simulationView);
         SetBuildMode(true);
     }
 
@@ -99,7 +103,7 @@ public class GameManager : MonoBehaviour
     {
         var goal = GameObject.FindWithTag("Goal");
         return new StudioField {
-            scenePath = gameObject.scene.path, ballPose = new Pose(ball.transform.position, ball.transform.rotation),
+            scenePath = gameObject.scene.path, stageId = stageId, centeredGoalPose = true, ballPose = savedBallPose,
             hasGoal = goal != null, goalPose = goal ? new Pose(goal.transform.position, goal.transform.rotation) : Pose.identity,
             tools = buildManager.CaptureTools()
         };
@@ -107,14 +111,50 @@ public class GameManager : MonoBehaviour
 
     internal void SaveBuildField()
     {
-        if (ProgressSave.Data == null || !ball) return;
+        if (ProgressSave.Data == null) return;
         ProgressSave.Data.draft = CaptureField();
         ProgressSave.Enter("StudioScene");
     }
 
-    private void SaveBallPose()
+    private void EnterLaunchMode()
     {
-        savedBallPose = new Pose(ball.transform.position, ball.transform.rotation);
+        Transform eye = simulationView.transform;
+        float radius = ballPrefab.GetComponent<SphereCollider>().radius * ballPrefab.transform.localScale.x;
+        Vector3 offset = heldBallOffset;
+        offset.z = Mathf.Max(offset.z, simulationView.nearClipPlane + radius * 2f);
+        Vector3 displacement = eye.rotation * offset;
+        Vector3 position = eye.position + displacement;
+        if (Physics.SphereCast(eye.position, radius, displacement.normalized, out _, displacement.magnitude,
+                Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore) ||
+            Physics.CheckSphere(position, radius, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+            return;
+
+        savedBallPose = new Pose(position, eye.rotation);
+        if (ball == null)
+        {
+            ball = Instantiate(ballPrefab, position, eye.rotation);
+            simulationManager.BindBall(ball);
+            ball.DeadZoneEntered += RespawnBall;
+            ball.GoalBodyHit += OnGoalBodyHit;
+            ball.GoalScored += ShowSuccess;
+            ball.TrickToolHit += RecordTool;
+        }
+        ball.ResetToPose(savedBallPose);
+        ball.SetBallVisible(true);
+        simulationField.ballPose = savedBallPose;
+        simulationMovement.PrepareLaunchView(ball.transform);
+        simulationManager.enabled = true;
+    }
+
+    private void CheckLaunchView()
+    {
+        if (previousLaunchView is Pose previous &&
+            ((simulationView.transform.position - previous.position).sqrMagnitude > 0.000001f ||
+             Quaternion.Angle(simulationView.transform.rotation, previous.rotation) > 0.1f))
+        {
+            simulationManager.ClearPreviousLaunch();
+            previousLaunchView = null;
+        }
     }
 
     public void OpenSettings()
@@ -130,6 +170,22 @@ public class GameManager : MonoBehaviour
         if (!inSimulation && keyboard.f1Key.wasPressedThisFrame) { OpenSettings(); return; }
         if (!keyboard.pKey.wasPressedThisFrame)
         {
+            if (inSimulation && !simulationManager.enabled)
+            {
+                simulationMovement.MoveBeforeLaunch(buildArea);
+                CheckLaunchView();
+                if (keyboard.eKey.wasPressedThisFrame)
+                    EnterLaunchMode();
+                return;
+            }
+            if (inSimulation && keyboard.eKey.wasPressedThisFrame)
+            {
+                RespawnBall();
+                simulationManager.enabled = false;
+                ball.SetBallVisible(false);
+                simulationMovement.StartExploring();
+                return;
+            }
             if (keyboard.rKey.wasPressedThisFrame && inSimulation &&
                 simulationManager != null && simulationManager.HasLaunched)
                 RespawnBall();
@@ -138,14 +194,7 @@ public class GameManager : MonoBehaviour
 
         if (!inSimulation)
         {
-            if (ball == null)
-            {
-                Debug.LogWarning("위치를 저장할 PingPongBall을 찾을 수 없습니다.", this);
-                return;
-            }
-
             LeavingBuildMode?.Invoke();
-            SaveBallPose();
             simulationField = CaptureField();
             StartCoroutine(TransitionTo(false));
         }
@@ -162,8 +211,11 @@ public class GameManager : MonoBehaviour
         if (!inSimulation)
             return;
 
+        resumeLaunchMode = simulationManager.enabled;
         if (ball != null)
             ball.ResetToPose(savedBallPose);
+        if (ball != null) ball.SetBallVisible(false);
+        simulationMovement.StopExploring();
         StartCoroutine(TransitionTo(true));
     }
 
@@ -187,9 +239,11 @@ public class GameManager : MonoBehaviour
         Quaternion originalRotation = source.transform.rotation;
         float originalFov = source.fieldOfView;
 
-        // 비활성 상태에서 발사 구도를 준비해 도착 후 카메라가 다시 움직이지 않게 한다.
-        if (!toBuild && simulationCamera.TryGetComponent<SimulationCameraMovement>(out var movement))
-            movement.PrepareLaunchView();
+        if (!toBuild)
+        {
+            if (resumeLaunchMode) simulationMovement.RestoreLaunchView();
+            else simulationMovement.PreparePositionSelection();
+        }
 
         if (transitionDuration > 0f)
         {
@@ -253,16 +307,20 @@ public class GameManager : MonoBehaviour
     private void SetBuildMode(bool buildMode)
     {
         inSimulation = !buildMode;
-        if (buildMode && simulationCamera.TryGetComponent<SimulationCameraMovement>(out var movement))
-            movement.RestoreBuildGuide();
+
         if (ball != null) ball.ShowTrajectory(buildMode);
         buildCamera.SetActive(buildMode);
         simulationCamera.SetActive(!buildMode);
+        if (!buildMode)
+        {
+            if (resumeLaunchMode) ball.SetBallVisible(true);
+            else simulationMovement.StartExploring();
+        }
         UpdateModeCanvases(true);
 
         // 빌드 화면에서 클릭해도 공의 발사 기회를 소모하지 않게 한다.
         if (simulationManager != null)
-            simulationManager.enabled = !buildMode;
+            simulationManager.enabled = !buildMode && resumeLaunchMode;
     }
 
     internal static float CameraEase(float elapsed, float duration)
@@ -297,6 +355,8 @@ public class GameManager : MonoBehaviour
 
     private void ClearUsedTools()
     {
+        previousLaunchView = new Pose(simulationView.transform.position, simulationView.transform.rotation);
+        simulationMovement.TrackLaunch();
         hitObjects.Clear();
         similarVideoCount = 0;
         usedTrickTools.Clear();
@@ -339,6 +399,9 @@ public class GameManager : MonoBehaviour
     public void UploadShot()
     {
         if (!showingSuccess || !uploadButton.interactable) return;
+        simulationField.hasSimulationView = true;
+        simulationField.simulationPlayerPosition = simulationMovement.PlayerPosition;
+        simulationField.simulationView = new Pose(simulationView.transform.position, simulationView.transform.rotation);
         MainSceneGameManager.QueueUpload(hitObjects.Count, ball.ElapsedFlightTime,
             usedTrickTools.Count, ball.BounceCount, similarVideoCount);
         var data = ProgressSave.Data;

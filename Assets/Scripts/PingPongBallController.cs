@@ -17,9 +17,9 @@ public class PingPongBallController : MonoBehaviour
 
     // Inspector에서 버튼을 1초 눌렀을 때 줄 충격량을 조절할 수 있다.
     [SerializeField, Min(0f)] private float impulsePerSecond = 1f;
-    [SerializeField, Min(3)] private int maxGhosts = 128;
+    [SerializeField, Min(3)] private int maxGhosts = 384;
     [Tooltip("잔상 사이의 기본 월드 거리입니다.")]
-    [SerializeField, Min(0.01f)] private float ghostSpacing = 0.15f;
+    [SerializeField, Min(0.01f)] private float ghostSpacing = 0.05f;
     [SerializeField, Range(0f, 1f)] private float ghostAlpha = 0.25f;
     private readonly List<Vector3> samples = new();
     private Vector3 latestPosition;
@@ -115,7 +115,13 @@ public class PingPongBallController : MonoBehaviour
 
     public float LaunchBall(float holdTime, Vector3 direction, float speed = 1f)
     {
-        if (holdTime <= 0f || direction == Vector3.zero)
+        float impulse = holdTime * impulsePerSecond * Mathf.Clamp(speed, 0.05f, 1f);
+        return LaunchWithImpulse(impulse, direction, speed);
+    }
+
+    public float LaunchWithImpulse(float impulse, Vector3 direction, float speed)
+    {
+        if (impulse <= 0f || direction == Vector3.zero)
             return 0f;
 
         firstContact = GoalContact.None;
@@ -134,7 +140,6 @@ public class PingPongBallController : MonoBehaviour
         ApplyBounceThreshold(flightSpeed);
         body.useGravity = flightSpeed == 1f;
         // normalized는 방향을 유지하면서 길이만 1로 맞춘다. 누른 시간에 비례하는 충격량을 Impulse로 한 번에 준다.
-        float impulse = LaunchImpulse(holdTime);
         body.AddForce(direction.normalized * impulse, ForceMode.Impulse);
         return impulse;
     }
@@ -182,6 +187,12 @@ public class PingPongBallController : MonoBehaviour
         if (!body.isKinematic && flightSpeed < 1f)
             body.AddForce(Physics.gravity * (flightSpeed * flightSpeed), ForceMode.Acceleration);
     }
+    public void SetBallVisible(bool visible)
+    {
+        GetComponent<Renderer>().enabled = visible;
+        GetComponent<SphereCollider>().enabled = visible;
+    }
+
     public void ShowTrajectory(bool visible) => showTrajectory = visible;
 
     // Flush after the contact callbacks, before the next physics step or rendered frame.

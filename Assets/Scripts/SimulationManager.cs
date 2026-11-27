@@ -5,7 +5,7 @@ public class SimulationManager : MonoBehaviour
 {
     [SerializeField] private Camera simulationCamera;
     [SerializeField] private Image launchPowerFillImage;
-    [SerializeField, Min(0f)] private float goalSlowDistance = 1.5f;
+    [SerializeField, Min(0f)] private float goalSlowDistance = 0.05f;
     [Tooltip("컵 입구에서 로컬 위쪽으로 종료 평면을 올리는 월드 거리")]
     [SerializeField, Min(0f)] private float goalExitHeightOffset = 0.05f;
     [SerializeField, Range(0.05f, 1f)] private float goalSpeedMultiplier = 0.175f;
@@ -30,17 +30,22 @@ public class SimulationManager : MonoBehaviour
 
     private PingPongBallController ball;
     public PingPongBallController Ball => ball;
+    [SerializeField, Min(0.01f)] private float aimPlaneDistance = 1f;
+    private Vector2 pressedViewport;
+    private Vector3 pressedDirection;
     private float? mouseDownTime;
     private bool hasLaunched;
     public bool HasLaunched => hasLaunched;
     public readonly struct LaunchRecord
     {
         public readonly Vector2 viewport;
+        public readonly Vector3 direction;
         public readonly float impulse, gaugeFraction;
 
-        public LaunchRecord(Vector2 viewport, float impulse, float maximum)
+        public LaunchRecord(Vector2 viewport, Vector3 direction, float impulse, float maximum)
         {
             this.viewport = viewport;
+            this.direction = direction;
             this.impulse = impulse;
             gaugeFraction = maximum > 0f ? Mathf.Clamp01(impulse / maximum) : 0f;
         }
@@ -48,16 +53,20 @@ public class SimulationManager : MonoBehaviour
 
     public LaunchRecord? PreviousLaunch { get; private set; }
     public event System.Action LaunchRecorded;
+    public event System.Action LaunchRecordCleared;
+    public void ClearPreviousLaunch()
+    {
+        PreviousLaunch = null;
+        LaunchRecordCleared?.Invoke();
+    }
+    public event System.Action NoPreviousLaunch;
     public Image PowerGauge => launchPowerFillImage;
     public Collider SlowMotionGoal { get; private set; }
 
-    private void Awake()
+    public void BindBall(PingPongBallController instance)
     {
-        // 시작할 때 공을 한 번 찾는다. TryGetComponent는 공에 붙은 발사 스크립트를 찾아 ball에 담는다.
-        GameObject target = GameObject.FindGameObjectWithTag("Player");
-        if (target == null || !target.TryGetComponent(out ball))
-            Debug.LogWarning("PingPongBall needs a PingPongBallController.", this);
-        if (ball != null) ballCollider = ball.GetComponent<SphereCollider>();
+        ball = instance;
+        ballCollider = ball.GetComponent<SphereCollider>();
     }
 
     private void OnEnable()
@@ -224,8 +233,29 @@ public class SimulationManager : MonoBehaviour
         if (ball == null)
             return;
 
+        if (SettingsWindow.BlocksInput || Input.GetKeyDown(KeyCode.E)) return;
+        if (Input.GetKeyDown(KeyCode.F))
+        {
+            if (PreviousLaunch is LaunchRecord record)
+            {
+                ResetLaunchInput();
+                hasLaunched = ball.LaunchWithImpulse(record.impulse, record.direction, GetGoalSpeed()) > 0f;
+                if (hasLaunched) LaunchRecorded?.Invoke();
+            }
+            else NoPreviousLaunch?.Invoke();
+            if (hasLaunched) return;
+        }
+
         if (Input.GetMouseButtonDown(0))
         {
+            Camera view = simulationCamera != null ? simulationCamera : Camera.main;
+            if (view == null) return;
+            Vector3 screen = Input.mousePosition;
+            // ScreenToWorldPoint의 z는 광선 길이가 아니라 카메라 정면 기준 깊이다.
+            float ballDepth = Vector3.Dot(ball.transform.position - view.transform.position, view.transform.forward);
+            screen.z = Mathf.Max(aimPlaneDistance, ballDepth + 0.01f);
+            pressedDirection = (view.ScreenToWorldPoint(screen) - ball.transform.position).normalized;
+            pressedViewport = view.ScreenToViewportPoint(screen);
             mouseDownTime = Time.unscaledTime;
         }
 
@@ -245,28 +275,11 @@ public class SimulationManager : MonoBehaviour
         if (holdTime <= 0f)
             return;
 
-        // Inspector에서 지정한 카메라를 쓴다. 비어 있으면 MainCamera 태그가 붙은 카메라를 쓴다.
-        Camera camera = simulationCamera != null ? simulationCamera : Camera.main;
-        if (camera == null)
-        {
-            Debug.LogWarning("Assign a simulation camera to launch the ball.", this);
-            return;
-        }
-
-        // 화면의 마우스 위치를 지나 장면 안쪽으로 뻗는 가상의 선(Ray)을 만든다.
-        LaunchFromScreen(camera, Input.mousePosition, holdTime);
-    }
-
-    private void LaunchFromScreen(Camera camera, Vector3 mousePosition, float holdTime)
-    {
-        Ray ray = camera.ScreenPointToRay(mousePosition);
-        // 선의 방향만 꺼낸다. 공은 자신의 현재 위치에서 이 방향으로 날아간다.
-        Vector3 launchDirection = ray.direction;
-        float impulse = ball.LaunchBall(holdTime, launchDirection, GetGoalSpeed());
-        hasLaunched = true;
+        float impulse = ball.LaunchBall(holdTime, pressedDirection, GetGoalSpeed());
+        hasLaunched = impulse > 0f;
         if (impulse > 0f)
         {
-            PreviousLaunch = new LaunchRecord(camera.ScreenToViewportPoint(mousePosition), impulse, ball.LaunchImpulse(maxtime));
+            PreviousLaunch = new LaunchRecord(pressedViewport, pressedDirection, impulse, ball.LaunchImpulse(maxtime));
             LaunchRecorded?.Invoke();
         }
     }

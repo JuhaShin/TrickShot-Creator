@@ -1,84 +1,131 @@
-﻿using UnityEngine;
+using UnityEngine;
+using UnityEngine.InputSystem;
 
 [RequireComponent(typeof(Camera))]
 public class SimulationCameraMovement : MonoBehaviour
 {
-    [SerializeField] private Transform ball;
-    private Transform positionTarget;
+    [SerializeField] private CameraMovementSettings movementSettings;
+    [SerializeField] private bool enableEyeHeightInput;
+    private float eyeHeight;
     [SerializeField, Range(1f, 5f)] private float maxZoom = 5f;
-    private float launchViewDistance;
+    private Transform ball;
+    private Rigidbody player;
+    private CapsuleCollider capsule;
+    private Vector3 moveVelocity;
+    private Pose launchView;
     private Camera trackingCamera;
-    private float initialFieldOfView;
-    private float initialHalfFovTangent;
-    private bool launchViewPrepared;
-    private Vector3 launchCameraPosition;
+    private float initialFieldOfView, initialHalfFovTangent, launchViewDistance;
+    private bool exploring, tracking;
+    public Vector3 PlayerPosition => player.position;
 
-    private void Awake()
+    public void RestoreUploadedPosition(Vector3 feet, Pose view)
     {
-        InitializeCamera();
+        PreparePositionSelection();
+        player.position = feet;
+        player.transform.position = feet;
+        transform.SetPositionAndRotation(view.position, view.rotation);
     }
 
-    private void InitializeCamera()
+    public void PreparePositionSelection()
     {
-        if (trackingCamera != null) return;
-        if (ball == null)
+        if (trackingCamera == null)
         {
-            PingPongBallController controller = FindFirstObjectByType<PingPongBallController>();
-            if (controller != null)
-                ball = controller.transform;
+            player = GetComponentInParent<Rigidbody>();
+            capsule = player.GetComponent<CapsuleCollider>();
+            trackingCamera = GetComponent<Camera>();
+            initialFieldOfView = trackingCamera.fieldOfView;
+            initialHalfFovTangent = Mathf.Tan(initialFieldOfView * Mathf.Deg2Rad * 0.5f);
         }
-
-        trackingCamera = GetComponent<Camera>();
-        initialFieldOfView = trackingCamera.fieldOfView;
-        initialHalfFovTangent = Mathf.Tan(initialFieldOfView * Mathf.Deg2Rad * 0.5f);
+        tracking = false;
+        trackingCamera.fieldOfView = initialFieldOfView;
     }
 
-    private void LateUpdate()
+    public void StartExploring()
     {
-        if (launchViewPrepared) LookAtBall();
+        exploring = true;
+        if (enableEyeHeightInput) SetEyeHeight(transform.position.y);
+        capsule.enabled = true;
+        player.isKinematic = false;
+        SetExploreCursor(Application.isFocused);
     }
 
-    public void PrepareLaunchView()
+    private static void SetExploreCursor(bool locked)
     {
-        InitializeCamera();
-        if (ball == null)
-            return;
+        Cursor.lockState = locked ? CursorLockMode.Locked : CursorLockMode.None;
+        Cursor.visible = !locked;
+    }
 
-        FindGuide();
-        launchCameraPosition = positionTarget != null ? positionTarget.position : transform.position;
-        if (positionTarget != null)
-            positionTarget.gameObject.SetActive(false);
-        launchViewPrepared = true;
+    private void OnApplicationFocus(bool focused)
+    {
+        if (exploring) SetExploreCursor(focused);
+    }
+
+    public void MoveBeforeLaunch(Bounds area)
+    {
+        if (!Application.isFocused) { moveVelocity = Vector3.zero; return; }
+        Vector2 look = movementSettings.ReadLookDelta();
+        Vector3 angles = transform.eulerAngles;
+        if (enableEyeHeightInput)
+        {
+            var keyboard = Keyboard.current;
+            float vertical = keyboard == null ? 0f : keyboard.spaceKey.ReadValue() - keyboard.shiftKey.ReadValue();
+            SetEyeHeight(eyeHeight + vertical * Time.deltaTime);
+        }
+        float pitch = Mathf.Clamp(Mathf.DeltaAngle(0f, angles.x) - look.y, -89f, 89f);
+        transform.rotation = Quaternion.Euler(pitch, angles.y + look.x, 0f);
+        moveVelocity = movementSettings.UpdateVelocity(moveVelocity, movementSettings.ReadMoveInput(),
+            transform.eulerAngles.y, Time.deltaTime);
+        Vector3 p = player.position;
+        if ((p.x <= area.min.x && moveVelocity.x < 0) || (p.x >= area.max.x && moveVelocity.x > 0)) moveVelocity.x = 0;
+        if ((p.z <= area.min.z && moveVelocity.z < 0) || (p.z >= area.max.z && moveVelocity.z > 0)) moveVelocity.z = 0;
+    }
+
+    private void FixedUpdate()
+    {
+        if (exploring) player.linearVelocity = new Vector3(moveVelocity.x, player.linearVelocity.y, moveVelocity.z);
+    }
+
+    public void StopExploring()
+    {
+        if (!exploring) return;
+        exploring = false;
+        moveVelocity = Vector3.zero;
+        player.linearVelocity = Vector3.zero;
+        player.isKinematic = true;
+        capsule.enabled = false;
+        SetExploreCursor(false);
+    }
+
+    public void PrepareLaunchView(Transform target)
+    {
+        launchView = new Pose(transform.position, transform.rotation);
+        StopExploring();
+        ball = target;
+        launchViewDistance = Vector3.Distance(launchView.position, ball.position);
         RestoreLaunchView();
-    }
-
-    private void FindGuide()
-    {
-        if (positionTarget == null && ball != null)
-        {
-            foreach (Transform child in ball.GetComponentsInChildren<Transform>(true))
-                if (child.name == "PersonDemo2")
-                {
-                    positionTarget = child;
-                    break;
-                }
-        }
-    }
-
-    public void RestoreBuildGuide()
-    {
-        FindGuide();
-        if (positionTarget == null) return;
-        positionTarget.gameObject.SetActive(true);
-        launchViewPrepared = false;
     }
 
     public void RestoreLaunchView()
     {
-        transform.position = launchCameraPosition;
-        if (ball != null)
-            launchViewDistance = Vector3.Distance(trackingCamera.transform.position, ball.position);
-        LookAtBall();
+        tracking = false;
+        transform.SetPositionAndRotation(launchView.position, launchView.rotation);
+        trackingCamera.fieldOfView = initialFieldOfView;
+    }
+
+    public void TrackLaunch() => tracking = true;
+
+    private void LateUpdate()
+    {
+        if (exploring && enableEyeHeightInput) SetEyeHeight(eyeHeight);
+        if (tracking) LookAtBall();
+    }
+
+    private void SetEyeHeight(float height)
+    {
+        eyeHeight = Mathf.Clamp(height, 1f, 1.6f);
+        Vector3 position = transform.position;
+        position.y = eyeHeight;
+        transform.position = position;
     }
 
     public void LookAtBall()

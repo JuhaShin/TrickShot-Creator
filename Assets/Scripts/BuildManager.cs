@@ -34,8 +34,8 @@ public class BuildManager : MonoBehaviour
     private int ballRotationAxis;
 
     private const float DefaultDistance = 5f;
+    private static readonly float[] PlacementDistances = { 0.5f, 1f, 1.5f, 2f, 3f, 5f };
     [SerializeField, Min(0.01f)] private float distanceSmoothTime = 0.2f;
-    [SerializeField, Min(0.01f)] private float wheelSensitivity = 1f;
     private float placementDistance;
     private float targetDistance;
     private float distanceVelocity;
@@ -49,7 +49,7 @@ public class BuildManager : MonoBehaviour
     private bool editing;
     private SphereCollider ballSphere;
     private bool editingGoal;
-    private Vector3 goalGrabPoint;
+    private Vector3 goalGrabOffset;
     private readonly List<Collider> roundGoalParts = new();
     private Vector3 originalPosition;
     private Quaternion originalRotation;
@@ -74,7 +74,7 @@ public class BuildManager : MonoBehaviour
         }
         foreach (GameObject tool in GameObject.FindGameObjectsWithTag("TrickTool"))
             PlacedTools(FindToolPrefab(tool))?.Add(tool);
-        if (GameManager.LastFieldTools(gameObject.scene.path) is { } savedTools)
+        if (gameManager.LastFieldTools() is { } savedTools)
         {
             foreach (var group in new[] { placedFryingPans, placedPots })
             {
@@ -174,13 +174,25 @@ public class BuildManager : MonoBehaviour
         float scroll = Input.mouseScrollDelta.y;
         if (scroll != 0f)
         {
-            targetDistance = editing && !wheelAdjusted && placementDistance < 3f ? 3f :
-                Mathf.Clamp(targetDistance + scroll * wheelSensitivity, 3f, 10f);
+            int index = System.Array.BinarySearch(PlacementDistances, targetDistance);
+            int ticks = Mathf.Max(1, Mathf.RoundToInt(Mathf.Abs(scroll)));
+            int direction = scroll > 0f ? 1 : -1;
+            // An edited object can start between stops. Count the first stop in the scroll direction.
+            if (index < 0) index = ~index - (direction > 0 ? 1 : 0);
+            index = Mathf.Clamp(index + direction * ticks, 0, PlacementDistances.Length - 1);
+            targetDistance = PlacementDistances[index];
             wheelAdjusted = true;
         }
         if (wheelAdjusted)
-            placementDistance = Mathf.Clamp(Mathf.SmoothDamp(placementDistance, targetDistance,
-                ref distanceVelocity, distanceSmoothTime), 3f, 10f);
+        {
+            placementDistance = Mathf.SmoothDamp(placementDistance, targetDistance,
+                ref distanceVelocity, distanceSmoothTime);
+            if (Mathf.Abs(placementDistance - targetDistance) < 0.001f)
+            {
+                placementDistance = targetDistance;
+                distanceVelocity = 0f;
+            }
+        }
         HandleRotationInput();
         if (editing && !wheelAdjusted && cameraTransform.position == editStartCameraPosition &&
             cameraTransform.rotation == editStartCameraRotation)
@@ -210,7 +222,7 @@ public class BuildManager : MonoBehaviour
     {
         preview.transform.position = ray.GetPoint(placementDistance);
         if (editingGoal)
-            preview.transform.position -= preview.transform.TransformVector(goalGrabPoint);
+            preview.transform.position -= goalGrabOffset;
         bool hitSurface = Physics.Raycast(ray, out RaycastHit hit, placementDistance,
             Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore);
         if (selectedPrefab == fryingPanPrefab && ballSphere == null &&
@@ -222,7 +234,7 @@ public class BuildManager : MonoBehaviour
         {
             preview.transform.position = hit.point;
             if (editingGoal)
-                preview.transform.position -= preview.transform.TransformVector(goalGrabPoint);
+                preview.transform.position -= goalGrabOffset;
             float closest = ballSphere != null ? -BallRadius : float.PositiveInfinity;
             foreach (Collider part in roundGoalParts)
             {
@@ -357,7 +369,7 @@ public class BuildManager : MonoBehaviour
                 }
                 if (placementParts.Count == 0 && roundGoalParts.Count == 0) return;
                 editingGoal = true;
-                goalGrabPoint = t.InverseTransformPoint(hitPoint);
+                goalGrabOffset = hitPoint - t.position;
                 BeginPlacement(null, t.gameObject);
                 return;
             }
@@ -433,7 +445,11 @@ public class BuildManager : MonoBehaviour
             axis = Vector3.forward;
 
         // 초당 회전 각도로 계산해서 프레임 수에 따라 속도가 달라지지 않게 한다.
-        preview.transform.Rotate(axis, direction * rotationSpeed * Time.deltaTime, Space.World);
+        if (direction != 0f)
+        {
+            Vector3 eulerStep = axis * (direction * rotationSpeed * Time.deltaTime);
+            preview.transform.Rotate(eulerStep, Space.World);
+        }
     }
 
     private bool CanPlace()
@@ -555,7 +571,7 @@ public class BuildManager : MonoBehaviour
             Transform camera = gameManager.BuildCamera.transform;
             editStartCameraPosition = camera.position;
             editStartCameraRotation = camera.rotation;
-            Vector3 anchor = editingGoal ? preview.transform.TransformPoint(goalGrabPoint) : originalPosition;
+            Vector3 anchor = editingGoal ? originalPosition + goalGrabOffset : originalPosition;
             Vector3 offset = anchor - camera.position;
             placementDistance = targetDistance = offset.magnitude;
             editLocalDirection = placementDistance > 0f ?

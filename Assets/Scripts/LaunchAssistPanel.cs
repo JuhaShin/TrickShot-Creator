@@ -1,3 +1,4 @@
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -6,6 +7,34 @@ public class LaunchAssistPanel : MonoBehaviour
     [SerializeField] private SimulationManager simulation;
     [SerializeField] private Image previousInputMarker;
     private RectTransform forceLine;
+    private TextMeshProUGUI warning;
+
+    private void ShowMissingRecord()
+    {
+        if (!warning)
+        {
+            warning = new GameObject("ReplayWarning", typeof(RectTransform)).AddComponent<TextMeshProUGUI>();
+            RectTransform rect = warning.rectTransform;
+            rect.SetParent(transform, false);
+            rect.anchorMin = rect.anchorMax = new Vector2(.5f, .25f);
+            rect.sizeDelta = new Vector2(500, 60);
+            rect.anchoredPosition = Vector2.zero;
+            warning.alignment = TextAlignmentOptions.Center;
+            warning.color = Color.red;
+            warning.fontSize = 24;
+            warning.raycastTarget = false;
+            warning.text = "No previous launch to replay.";
+        }
+        warning.gameObject.SetActive(true);
+        StopAllCoroutines();
+        StartCoroutine(HideWarningAfterDelay());
+    }
+
+    private System.Collections.IEnumerator HideWarningAfterDelay()
+    {
+        yield return new WaitForSecondsRealtime(2f);
+        warning.gameObject.SetActive(false);
+    }
 
     private void Awake()
     {
@@ -22,15 +51,25 @@ public class LaunchAssistPanel : MonoBehaviour
 
     private void OnEnable()
     {
+        simulation.NoPreviousLaunch += ShowMissingRecord;
         simulation.LaunchRecorded += DisplayRecord;
+        simulation.LaunchRecordCleared += DisplayRecord;
         DisplayRecord();
     }
 
-    private void OnDisable() => simulation.LaunchRecorded -= DisplayRecord;
+    private void OnDisable()
+    {
+        simulation.NoPreviousLaunch -= ShowMissingRecord;
+        simulation.LaunchRecorded -= DisplayRecord;
+        simulation.LaunchRecordCleared -= DisplayRecord;
+        StopAllCoroutines();
+        if (warning) warning.gameObject.SetActive(false);
+    }
 
     private void DisplayRecord()
     {
         var record = simulation.PreviousLaunch;
+        if (record.HasValue && warning) warning.gameObject.SetActive(false);
         if (previousInputMarker != null)
         {
             previousInputMarker.gameObject.SetActive(record.HasValue);

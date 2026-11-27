@@ -7,9 +7,9 @@ public class CinematicShot : MonoBehaviour
     [SerializeField] private RectTransform topBar;
     [SerializeField] private RectTransform bottomBar;
     [SerializeField, Range(0f, 0.45f)] private float barHeight = 0.12f;
-    [SerializeField, Min(0.01f)] private float radius = 1f;
+    [SerializeField, Min(0.01f)] private float radius = 0.15f;
     [SerializeField, Min(0.01f)] private float shotInterval = 2f;
-    [SerializeField, Min(0.01f)] private float cameraClearance = 0.15f;
+    [SerializeField, Min(0.001f)] private float cameraClearance = 0.005f;
 
     private Camera view;
     private float shotFov, elapsed, shotAge, fromFov, bars, fromBars;
@@ -17,6 +17,8 @@ public class CinematicShot : MonoBehaviour
     private bool firstShot;
     private float blendDuration;
     private Vector3 fromPosition, destination;
+    private Vector3 shotOffset;
+    private bool hasShotOffset;
     private Quaternion fromRotation;
     private const float RetryInterval = 0.2f;
     private float retryDelay;
@@ -34,6 +36,7 @@ public class CinematicShot : MonoBehaviour
         cinematicCanvas.gameObject.SetActive(true);
         returning = false;
         firstShot = true;
+        hasShotOffset = false;
         retryDelay = 0f;
         shotAge = shotInterval; // 첫 프레임에도 촬영점을 고른다.
     }
@@ -46,6 +49,7 @@ public class CinematicShot : MonoBehaviour
         shotAge += dt;
         retryDelay -= dt;
         bool changeMode = exit != returning || firstShot;
+        if (!exit && hasShotOffset) destination = ball.position + shotOffset;
         bool needPosition = !exit && (changeMode || (retryDelay <= 0f &&
             (shotAge >= shotInterval || !HasSight(destination, ball))));
         bool foundPosition = false;
@@ -53,6 +57,8 @@ public class CinematicShot : MonoBehaviour
         if (needPosition)
         {
             foundPosition = TryPickPosition(ball, goal, out candidate);
+            hasShotOffset = foundPosition;
+            if (foundPosition) shotOffset = candidate - ball.position;
             retryDelay = RetryInterval;
             shotAge = foundPosition ? 0f : shotInterval;
             if (!foundPosition)
@@ -77,6 +83,7 @@ public class CinematicShot : MonoBehaviour
         if (!returning && next != transform.position && !ClearPath(transform.position, next))
         {
             fromPosition = destination = next = transform.position;
+            hasShotOffset = false;
             shotAge = shotInterval;
         }
         Vector3 aim = returning ? Vector3.zero : ball.position - next;

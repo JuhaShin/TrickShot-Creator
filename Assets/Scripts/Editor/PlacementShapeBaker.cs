@@ -6,8 +6,10 @@ using UnityEngine;
 [InitializeOnLoad]
 public static class PlacementShapeBaker
 {
-    // 작은 값일수록 표면을 더 세밀하게 따라가지만 판정 비용이 늘어난다.
+    // 가장 긴 변을 나누는 셀 수. 값이 클수록 표면을 세밀하게 따라간다.
     private const int Resolution = 24;
+    private const string FryingPanPath = "Assets/PreFebs/FryingPanPreFeb.prefab";
+    private const int FryingPanResolution = 48;
     private const string Folder = "Assets/Resources/PlacementShapes";
 
     static PlacementShapeBaker()
@@ -19,7 +21,7 @@ public static class PlacementShapeBaker
     {
         if (EditorApplication.isPlayingOrWillChangePlaymode)
             return;
-        Bake("Assets/PreFebs/FryingPanPreFeb.prefab", false);
+        Bake(FryingPanPath, false);
         Bake("Assets/PreFebs/PotPrefeb.prefab", false);
     }
 
@@ -85,7 +87,7 @@ public static class PlacementShapeBaker
                 if (!collider.enabled || collider.isTrigger || collider.sharedMesh == null)
                     continue;
                 Matrix4x4 matrix = root.transform.worldToLocalMatrix * collider.transform.localToWorldMatrix;
-                BakeMesh(collider.sharedMesh, matrix, parts);
+                BakeMesh(collider.sharedMesh, matrix, parts, path == FryingPanPath ? FryingPanResolution : Resolution);
             }
         }
         finally
@@ -109,7 +111,7 @@ public static class PlacementShapeBaker
         AssetDatabase.SaveAssets();
     }
 
-    private static void BakeMesh(Mesh mesh, Matrix4x4 matrix, List<Bounds> parts)
+    private static void BakeMesh(Mesh mesh, Matrix4x4 matrix, List<Bounds> parts, int resolution = Resolution)
     {
         using (Mesh.MeshDataArray data = MeshUtility.AcquireReadOnlyMeshData(mesh))
 
@@ -127,7 +129,7 @@ public static class PlacementShapeBaker
                     bounds.Encapsulate(vertices[i]);
                 }
     
-                float cell = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z)) / Resolution;
+                float cell = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z)) / resolution;
                 if (cell < 0.00001f)
                     return;
                 Vector3 origin = bounds.min - Vector3.one * (cell * 0.5f);
